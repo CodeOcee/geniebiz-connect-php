@@ -4,64 +4,36 @@ namespace GenieBusinessConnect;
 
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Psr7\Response;
+use GuzzleHttp\Exception\GuzzleException;
+use JsonException;
 
+/**
+ * Genie Business Connect API Client
+ * Updated for Guzzle 7+ and PHP 8.2+ compatibility
+ */
 class Client
 {
-    const API_VERSION = '2.0';
-    const APP_VERSION = 'geniebiz-connect-php';
-    const SIGN_METHOD = 'sha1';
-    const SANDBOX_ENDPOINT = 'https://api.uat.geniebiz.lk/public/';
-    const PRODUCTION_ENDPOINT = 'https://api.geniebiz.lk/public/';
+    const API_VERSION     = '2.0';
+    const APP_VERSION     = 'geniebiz-connect-php';
+    const SIGN_METHOD     = 'sha1';
+    const SANDBOX_ENDPOINT     = 'https://api.uat.geniebiz.lk/public/';
+    const PRODUCTION_ENDPOINT  = 'https://api.geniebiz.lk/public/';
 
-    /**
-     * @var \GuzzleHttp\Client
-     */
-    private $httpClient;
+    private GuzzleClient $httpClient;
+    private string $apiKey;
+    private string $appId;
+    private string $mode;
+    private array $clientOptions;
+    private string $baseUrl;
 
-    /**
-     * @var string
-     */
-    private $apiKey;
+    public Transactions $transactions;
 
-    /**
-     * @var string
-     */
-    private $appId;
-
-    /**
-     * @var string
-     */
-    private $mode;
-
-    /**
-     * @var array
-     */
-    private $clientOptions;
-
-    /**
-     * @var string
-     */
-    private $baseUrl;
-
-    /**
-     * @var Transactions
-     */
-    public $transactions;
-
-
-    /**
-     * Client constructor.
-     * @param string $apiKey
-     * @param string $appId
-     * @param string $mode
-     * @param array $clientOptions
-     */
-    public function __construct(string $apiKey, string $appId, $mode = 'production', array $clientOptions = [])
+    public function __construct(string $apiKey, string $appId, string $mode = 'production', array $clientOptions = [])
     {
-        $this->apiKey = $apiKey;
-        $this->appId = $appId;
-        $this->mode = $mode;
-        $this->baseUrl = ($mode === 'production' ? self::PRODUCTION_ENDPOINT : self::SANDBOX_ENDPOINT);
+        $this->apiKey        = $apiKey;
+        $this->appId         = $appId;
+        $this->mode          = $mode;
+        $this->baseUrl       = ($mode === 'production') ? self::PRODUCTION_ENDPOINT : self::SANDBOX_ENDPOINT;
         $this->clientOptions = $clientOptions;
 
         $this->initiateHttpClient();
@@ -69,109 +41,99 @@ class Client
         $this->transactions = new Transactions($this);
     }
 
-    /**
-     * @param GuzzleClient $client
-     */
-    public function setClient(GuzzleClient $client)
+    public function setClient(GuzzleClient $client): void
     {
         $this->httpClient = $client;
     }
 
-    /**
-     * Initiates the HttpClient with required headers
-     */
-    private function initiateHttpClient()
+    private function initiateHttpClient(): void
     {
         $options = [
             'headers' => [
-                'Content-Type' => 'application/json',
-                'Accept' => 'application/json',
-                'Authorization' =>  $this->apiKey,
-            ]
+                'Content-Type'  => 'application/json',
+                'Accept'        => 'application/json',
+                'Authorization' => $this->apiKey,
+            ],
+            'timeout' => 30,
         ];
 
         $this->httpClient = new GuzzleClient(array_replace_recursive($this->clientOptions, $options));
     }
 
-    private function buildBaseUrl()
+    private function buildBaseUrl(): string
     {
         return $this->baseUrl;
     }
 
     /**
-     * @param Response $response
-     * @return mixed
+     * Handle API response (Guzzle 7+ compatible)
      */
-    private function handleResponse(Response $response)
+    private function handleResponse(Response $response): object
     {
-        $stream = \GuzzleHttp\Psr7\stream_for($response->getBody());
-        $data = json_decode($stream);
+        $body = $response->getBody()->getContents();
+
+        try {
+            $data = json_decode($body, false, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw new \RuntimeException('Invalid JSON response from Genie API: ' . $e->getMessage(), 0, $e);
+        }
+
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new \RuntimeException('JSON decode error: ' . json_last_error_msg());
+        }
 
         return $data;
     }
 
     /**
-     * @param string $endpoint
-     * @param array $json
-     * @return mixed
-     * @throws \GuzzleHttp\Exception\GuzzleException
+     * POST request
      */
-    public function post($endpoint, $json)
+    public function post(string $endpoint, array $json): object
     {
         $json['apiVersion'] = self::API_VERSION;
         $json['appVersion'] = self::APP_VERSION;
         $json['signMethod'] = self::SIGN_METHOD;
 
-        $response = $this->httpClient->request('POST', $this->buildBaseUrl().$endpoint, ['json' => $json]);
-        return $this->handleResponse($response);
-    }
-
-    /**
-     * @param string $endpoint
-     * @param array $pagination
-     * @return mixed
-     */
-    public function get(string $endpoint, array $pagination = [])
-    {
-        $response = $this->httpClient->request(
-            'GET',
-            $this->applyPagination($this->buildBaseUrl().$endpoint, $pagination)
-        );
-
-        return $this->handleResponse($response);
-    }
-
-    /**
-     * @param string $url
-     * @param array $pagination
-     * @return string
-     */
-    private function applyPagination(string $url, array $pagination)
-    {
-        if (count($pagination)) {
-            return $url.'?'.http_build_query($this->cleanPagination($pagination));
+        try {
+            $response = $this->httpClient->request('POST', $this->buildBaseUrl() . $endpoint, [
+                'json' => $json
+            ]);
+        } catch (GuzzleException $e) {
+            throw new \RuntimeException('Request failed: ' . $e->getMessage(), 0, $e);
         }
 
-        return $url;
+        return $this->handleResponse($response);
     }
 
     /**
-     * @param array $pagination
-     * @return array
+     * GET request with optional pagination
      */
-    private function cleanPagination(array $pagination)
+    public function get(string $endpoint, array $pagination = []): object
     {
-        $allowed = [
-            'page',
-        ];
+        $url = $this->applyPagination($this->buildBaseUrl() . $endpoint, $pagination);
 
-        return array_intersect_key($pagination, array_flip($allowed));
+        try {
+            $response = $this->httpClient->request('GET', $url);
+        } catch (GuzzleException $e) {
+            throw new \RuntimeException('Request failed: ' . $e->getMessage(), 0, $e);
+        }
+
+        return $this->handleResponse($response);
     }
 
-    /**
-     * @return string
-     */
-    public function getApiKey()
+    private function applyPagination(string $url, array $pagination): string
+    {
+        if (empty($pagination)) {
+            return $url;
+        }
+
+        $allowed = ['page'];
+        $clean   = array_intersect_key($pagination, array_flip($allowed));
+
+        return $url . '?' . http_build_query($clean);
+    }
+
+    public function getApiKey(): string
     {
         return $this->apiKey;
     }
